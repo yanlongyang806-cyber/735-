@@ -1,0 +1,455 @@
+import React, { useState } from 'react';
+import { CodeBlock } from './CodeBlock';
+import { AssistantStep } from '../types';
+import { XMarkIcon } from './icons/XMarkIcon';
+import { ChevronLeftIcon } from './icons/ChevronLeftIcon';
+import { ChevronRightIcon } from './icons/ChevronRightIcon';
+
+interface AIAssistantModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+const questFixSteps: AssistantStep[] = [
+  {
+    title: '步骤 1: 勘察任务与目标',
+    explanation: (
+      <>
+        首先，我们根据你的数据库结构，分开查询任务 <strong>40010</strong> 的基本信息和它的所有目标。
+        <br />
+        请检查第一个结果中的任务描述，并从第二个结果中找出与“第二阶段”相符的目标，记下它的 <code>TargetID</code>。
+      </>
+    ),
+    query: (questId) => `
+-- 1. 从 quest_template 获取基本信息
+SELECT ID, QuestDescription FROM quest_template WHERE ID = ${questId};
+
+-- 2. 从 quest_objectives 获取所有目标
+SELECT QuestID, ObjectiveType, TargetID, ObjectiveCount FROM quest_objectives WHERE QuestID = ${questId};
+`
+  },
+  {
+    title: '步骤 2: 识别目标NPC',
+    explanation: (
+      <>
+       现在，让我们用上一步找到的 <code>TargetID</code> 来确认具体是哪个NPC。
+       <br />
+       请将下方查询中的 <strong>[TargetID]</strong> 替换为实际的目标ID。执行后，你就能看到NPC的名字。请将这个ID填入上方的“NPC ID”输入框，以备后续步骤使用。
+      </>
+    ),
+    query: (questId, npcId) => `
+-- 请将 [TargetID] 替换为上一步中找到的ID
+SELECT Entry, Name FROM creature_template WHERE Entry = ${npcId || '[TargetID]'};
+`
+  },
+   {
+    title: '步骤 3: 检查现有脚本',
+    explanation: (
+        <>
+        复杂的交互（如对话）通常由 <code>smart_scripts</code> 处理。让我们检查相关NPC上是否已存在脚本。
+        <br />
+        请确保上方的 "NPC ID" 已经填好。你需要关注 <code>event_type</code> 为 <code>62</code> (完成任务目标) 或 <code>8</code> (接受任务)，以及它们对应的 <code>action_type</code> 是否为 <code>1</code> (交谈)。如果找不到匹配的脚本，这很可能就是问题所在。
+        </>
+    ),
+    query: (questId, npcId) => `
+-- 检查NPC的脚本 (请确保NPC ID已填写)
+SELECT * FROM smart_scripts WHERE source_type = 0 AND entryorguid = ${npcId || '[NPC_ENTRY_ID]'};
+
+-- 检查任务自身的脚本
+SELECT * FROM smart_scripts WHERE source_type = 9 AND entryorguid = ${questId};
+`
+  },
+  {
+    title: '步骤 4: 检查条件 (Conditions)',
+    explanation: (
+        <>
+        有时脚本存在但被某个条件阻止了。这些条件可能会因为玩家不满足某些标准（如种族、职业、声望等）而阻止事件触发。
+        <br />
+        此查询会检查是否有任何条件附加到了这个NPC的脚本事件上。
+        </>
+    ),
+    query: (questId, npcId) => `
+-- 检查与NPC相关的条件 (请确保NPC ID已填写)
+-- SourceTypeOrReferenceId 13 = SMART_EVENT, 12 = CREATURE_TEMPLATE_GOSSIP
+SELECT * FROM \`conditions\` WHERE SourceTypeOrReferenceId IN (12, 13) AND SourceEntry = ${npcId || '[NPC_ENTRY_ID]'};
+`
+  },
+  {
+    title: '步骤 5: 提出修复方案',
+    explanation: (
+      <>
+        如果确实缺少脚本，你需要添加一个。下面的模板用于在完成某个任务目标时触发NPC对话。
+        <br />
+        <strong>关键挑战：</strong> 此脚本需要一个 <code>[OBJECTIVE_INDEX]</code> (目标索引)。对于“第二阶段”，这个值很可能是 <strong>1</strong> (因为索引从0开始)。但这需要根据你的服务端核心如何处理 `quest_objectives` 表来确定，可能需要测试。
+        <br />
+        <strong>请务必替换以下占位符：</strong>
+        <ul className="list-disc list-inside my-2 text-sm">
+          <li><code>[NPC_ENTRY_ID]</code>: 从步骤2中获得的NPC ID (Entry)。</li>
+          <li><code>[NEW_SCRIPT_ID]</code>: 为此NPC脚本列表找一个唯一的ID (通常是现有最大ID + 1)。</li>
+          <li><code>[OBJECTIVE_INDEX]</code>: 第二个目标的索引，<strong>很可能是 1</strong>。</li>
+          <li><code>[TEXT_ID]</code>: NPC需要说的文本ID，可以从 <code>npc_text</code> 表中查找或创建。</li>
+        </ul>
+      </>
+    ),
+    query: () => `
+-- 这是一个修复模板。请务必用真实数据替换括号内的占位符！
+-- 重要：[OBJECTIVE_INDEX] 需要根据你的服务器核心来确定，但 1 是最可能的选择。
+INSERT INTO \`smart_scripts\` (\`entryorguid\`, \`source_type\`, \`id\`, \`link\`, \`event_type\`, \`event_phase_mask\`, \`event_chance\`, \`event_flags\`, \`event_param1\`, \`event_param2\`, \`event_param3\`, \`event_param4\`, \`action_type\`, \`action_param1\`, \`action_param2\`, \`action_param3\`, \`action_param4\`, \`action_param5\`, \`action_param6\`, \`target_type\`, \`target_param1\`, \`target_param2\`, \`target_param3\`, \`target_x\`, \`target_y\`, \`target_z\`, \`target_o\`, \`comment\`) VALUES
+([NPC_ENTRY_ID], 0, [NEW_SCRIPT_ID], 0, 62, 0, 100, 0, 40010, [OBJECTIVE_INDEX], 0, 0, 1, [TEXT_ID], 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 'Quest 40010 - Stage 2 Dialogue Trigger on Objective Complete');
+`
+  }
+];
+
+export const AIAssistantModal: React.FC<AIAssistantModalProps> = ({ isOpen, onClose }) => {
+  const [questId, setQuestId] = useState('40010');
+  const [npcId, setNpcId] = useState('');
+  const [currentStep, setCurrentStep] = useState(0);
+  
+  // Reset state when modal opens
+  React.useEffect(() => {
+    if (isOpen) {
+      setCurrentStep(0);
+      setQuestId('40010');
+      setNpcId('');
+    }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+  
+  const step = questFixSteps[currentStep];
+  const generatedQuery = step.query ? step.query(questId, npcId) : null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 transition-opacity" onClick={onClose}>
+      <div 
+        className="bg-gray-800 rounded-lg shadow-2xl p-6 md:p-8 w-full max-w-4xl h-full max-h-[90vh] border border-purple-500/30 flex flex-col" 
+        onClick={e => e.stopPropagation()}
+      >
+        <header className="flex justify-between items-center mb-4 flex-shrink-0">
+          <h2 className="text-2xl font-bold text-purple-300">AI 任务修复助手</h2>
+          <button onClick={onClose} className="p-2 text-gray-400 hover:text-white transition-colors">
+            <XMarkIcon className="w-6 h-6" />
+          </button>
+        </header>
+
+        <div className="flex-grow min-h-0 flex flex-col md:flex-row md:gap-6">
+          <div className="md:w-1/3 flex-shrink-0 mb-4 md:mb-0 flex flex-col">
+             <div className="space-y-4 mb-4">
+                 <div className="flex items-center gap-4">
+                     <label htmlFor="questId" className="block text-sm font-medium text-gray-300 flex-shrink-0">任务ID:</label>
+                     <input 
+                        type="text" 
+                        id="questId" 
+                        value={questId} 
+                        onChange={(e) => setQuestId(e.target.value)}
+                        className="w-full px-3 py-1 bg-gray-900 border border-gray-700 rounded-md focus:outline-none focus:ring-1 focus:ring-purple-500 text-sm"
+                     />
+                </div>
+                 <div className="flex items-center gap-4">
+                     <label htmlFor="npcId" className="block text-sm font-medium text-gray-300 flex-shrink-0">NPC ID:</label>
+                     <input 
+                        type="text" 
+                        id="npcId" 
+                        placeholder="从步骤2获取"
+                        value={npcId} 
+                        onChange={(e) => setNpcId(e.target.value)}
+                        className="w-full px-3 py-1 bg-gray-900 border border-gray-700 rounded-md focus:outline-none focus:ring-1 focus:ring-purple-500 text-sm"
+                     />
+                </div>
+            </div>
+            <h3 className="text-lg font-semibold text-green-300 mb-2 flex-shrink-0">{step.title}</h3>
+            <div className="text-gray-400 text-sm leading-relaxed space-y-2 overflow-y-auto pr-2">{step.explanation}</div>
+          </div>
+          <div className="flex-grow min-h-0 flex flex-col">
+            <p className="text-sm text-gray-500 mb-2 flex-shrink-0">生成的查询:</p>
+            <div className="flex-grow min-h-0">
+                {generatedQuery ? (
+                    <CodeBlock code={generatedQuery} />
+                ) : (
+                    <div className="h-full bg-gray-900 rounded-lg flex items-center justify-center">
+                        <p className="text-gray-500">此步骤没有查询。</p>
+                    </div>
+                )}
+            </div>
+          </div>
+        </div>
+
+        <footer className="flex justify-between items-center mt-6 flex-shrink-0">
+            <span className="text-sm text-gray-500">步骤 {currentStep + 1} / {questFixSteps.length}</span>
+            <div className="flex gap-4">
+                <button 
+                    onClick={() => setCurrentStep(s => Math.max(0, s - 1))}
+                    disabled={currentStep === 0}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 rounded-md hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    <ChevronLeftIcon className="w-5 h-5"/>
+                    上一步
+                </button>
+                <button 
+                    onClick={() => setCurrentStep(s => Math.min(questFixSteps.length - 1, s + 1))}
+                    disabled={currentStep === questFixSteps.length - 1}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 rounded-md hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    下一步
+                    <ChevronRightIcon className="w-5 h-5"/>
+                </button>
+            </div>
+        </footer>
+      </div>
+    </div>
+  );
+};
+
+import React, { useState, useCallback } from 'react';
+import { ClipboardIcon } from './icons/ClipboardIcon';
+import { CheckIcon } from './icons/CheckIcon';
+
+interface CodeBlockProps {
+  code: string;
+}
+
+export const CodeBlock: React.FC<CodeBlockProps> = ({ code }) => {
+  const [isCopied, setIsCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(code).then(() => {
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    });
+  }, [code]);
+
+  return (
+    <div className="relative bg-gray-900 rounded-lg h-full group">
+      <button
+        onClick={handleCopy}
+        className="absolute top-3 right-3 p-2 bg-gray-700 rounded-md text-gray-400 hover:bg-gray-600 hover:text-white transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+        aria-label="Copy code"
+      >
+        {isCopied ? (
+          <CheckIcon className="w-5 h-5 text-green-400" />
+        ) : (
+          <ClipboardIcon className="w-5 h-5" />
+        )}
+      </button>
+      <pre className="p-4 overflow-auto h-full text-sm">
+        <code className="language-sql text-yellow-200 font-mono">
+          {code.trim()}
+        </code>
+      </pre>
+    </div>
+  );
+};
+
+import React, { useState, useEffect } from 'react';
+import { DbConfig } from '../types';
+
+interface ConnectionModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onConnect: (config: DbConfig) => void;
+  currentConfig: DbConfig | null;
+}
+
+export const ConnectionModal: React.FC<ConnectionModalProps> = ({ isOpen, onClose, onConnect, currentConfig }) => {
+  const [config, setConfig] = useState<DbConfig>({
+    host: '127.0.0.1',
+    port: 3310,
+    user: 'root',
+    pass: '',
+    db: 'world',
+  });
+  
+  useEffect(() => {
+    if (currentConfig) {
+      setConfig(currentConfig);
+    } else {
+      // Reset to default if there's no config (e.g., after disconnect)
+       setConfig({
+        host: '127.0.0.1',
+        port: 3310,
+        user: 'root',
+        pass: '',
+        db: 'world',
+      });
+    }
+  }, [currentConfig, isOpen]);
+
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value, type } = e.target;
+    setConfig(prev => ({
+      ...prev,
+      [name]: type === 'number' ? parseInt(value, 10) || 0 : value,
+    }));
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onConnect(config);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 transition-opacity" onClick={onClose}>
+      <div className="bg-gray-800 rounded-lg shadow-2xl p-8 w-full max-w-md border border-green-500/20" onClick={e => e.stopPropagation()}>
+        <h2 className="text-2xl font-bold text-green-300 mb-4">数据库连接设置</h2>
+        <p className="text-sm text-gray-400 mb-6">
+          输入您的 MySQL 数据库信息。这些信息将仅保存在您的浏览器本地，不会被发送到任何服务器。
+        </p>
+
+        <form onSubmit={handleSubmit}>
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="host" className="block text-sm font-medium text-gray-300">主机 (Host)</label>
+              <input type="text" id="host" name="host" value={config.host} onChange={handleChange} className="mt-1 w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+            <div>
+              <label htmlFor="port" className="block text-sm font-medium text-gray-300">端口 (Port)</label>
+              <input type="number" id="port" name="port" value={config.port} onChange={handleChange} className="mt-1 w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+            <div>
+              <label htmlFor="user" className="block text-sm font-medium text-gray-300">用户名 (Username)</label>
+              <input type="text" id="user" name="user" value={config.user} onChange={handleChange} className="mt-1 w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+            <div>
+              <label htmlFor="pass" className="block text-sm font-medium text-gray-300">密码 (Password)</label>
+              <input type="password" id="pass" name="pass" value={config.pass} onChange={handleChange} className="mt-1 w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+            <div>
+              <label htmlFor="db" className="block text-sm font-medium text-gray-300">数据库名 (Database)</label>
+              <input type="text" id="db" name="db" value={config.db} onChange={handleChange} className="mt-1 w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+          </div>
+          <div className="mt-8 flex justify-end gap-4">
+            <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-600 rounded-md hover:bg-gray-700 transition-colors">取消</button>
+            <button type="submit" className="px-4 py-2 bg-green-600 rounded-md hover:bg-green-700 transition-colors">保存并连接</button>
+          </div>
+           <p className="text-xs text-yellow-400 mt-6 p-3 bg-yellow-900/30 rounded border border-yellow-700/50">
+            <strong>重要提示:</strong> 这是一个模拟连接。由于浏览器安全限制，本工具无法直接与您的数据库建立实时连接。保存设置将使应用界面显示为“已连接”状态，以便您为将来的后端集成做好配置准备。
+          </p>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+import React from 'react';
+import { QueryItem } from '../types';
+import { CodeBlock } from './CodeBlock';
+import { TableList } from './TableList';
+
+interface QueryViewerProps {
+  query: QueryItem;
+}
+
+export const QueryViewer: React.FC<QueryViewerProps> = ({ query }) => {
+  return (
+    <div className="bg-gray-800 bg-opacity-80 p-6 rounded-lg shadow-2xl backdrop-blur-sm h-full flex flex-col">
+      <div className="flex-shrink-0">
+        <h2 className="text-2xl font-bold text-green-300 mb-2">{query.title}</h2>
+        <p className="text-gray-400 mb-6">{query.description}</p>
+      </div>
+      <div className="flex-grow min-h-0">
+        {query.query && <CodeBlock code={query.query} />}
+        {query.data?.type === 'table_list' && <TableList tables={query.data.tables} />}
+      </div>
+    </div>
+  );
+};
+
+import React from 'react';
+import { QueryCategory } from '../types';
+
+interface SidebarProps {
+  categories: QueryCategory[];
+  selectedQueryId: string | null;
+  onSelectQuery: (id: string) => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ categories, selectedQueryId, onSelectQuery }) => {
+  return (
+    <aside className="w-64 md:w-80 h-full bg-gray-900 bg-opacity-80 p-4 overflow-y-auto border-r border-green-500/20 shadow-2xl">
+      <div className="mb-8">
+        <h2 className="text-xl font-bold text-green-400">SQL百宝箱</h2>
+        <p className="text-sm text-gray-400">WoW 7.3.5 数据库查询</p>
+      </div>
+      <nav>
+        <ul>
+          {categories.map(category => (
+            <li key={category.id} className="mb-6">
+              <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2">{category.name}</h3>
+              <ul>
+                {category.items.map(item => (
+                  <li key={item.id}>
+                    <a
+                      href="#"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        onSelectQuery(item.id);
+                      }}
+                      className={`block w-full text-left px-2 py-2 text-sm rounded-md transition-colors duration-200 ${
+                        selectedQueryId === item.id 
+                          ? 'bg-green-500/20 text-green-300 font-semibold' 
+                          : 'text-gray-300 hover:bg-gray-700/50 hover:text-white'
+                      }`}
+                    >
+                      {item.title}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </aside>
+  );
+};
+
+import React, { useState, useMemo } from 'react';
+
+interface TableListProps {
+  tables: string[];
+}
+
+export const TableList: React.FC<TableListProps> = ({ tables }) => {
+  const [filter, setFilter] = useState('');
+
+  const filteredTables = useMemo(() => {
+    if (!filter) {
+      return tables;
+    }
+    return tables.filter(table =>
+      table.toLowerCase().includes(filter.toLowerCase())
+    );
+  }, [tables, filter]);
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="mb-4 flex-shrink-0">
+        <input
+          type="text"
+          placeholder="Search for a table..."
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+          aria-label="Filter tables"
+        />
+      </div>
+      <div className="overflow-y-auto flex-grow bg-gray-900 p-4 rounded-lg">
+        {filteredTables.length > 0 ? (
+          <ul className="columns-2 md:columns-3 lg:columns-4 gap-x-6">
+            {filteredTables.map(table => (
+              <li key={table} className="text-sm text-gray-300 break-inside-avoid-column mb-2 font-mono hover:text-green-300 transition-colors">
+                {table}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-gray-400 text-center">No tables found matching your search.</p>
+        )}
+      </div>
+    </div>
+  );
+};
