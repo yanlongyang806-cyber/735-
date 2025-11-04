@@ -1,0 +1,5 @@
+{
+  "name": "WoW 7.3.5 SPP Admin Helper",
+  "description": "A tool to assist World of Warcraft Legion 7.3.5 private server administrators with common database tasks and bug fixing, featuring a collection of useful SQL queries and an AI assistant for complex problems.",
+  "requestFramePermissions": []
+}
